@@ -51,12 +51,35 @@
 #import <AssetsLibrary/AssetsLibrary.h>
 
 #import "AVCamPreviewView.h"
-
+#define INDICATOR_RECT_SIZE 50.0
+#define PICKER_MAXIMUM_ZOOM_SCALE 5.0
+#define PICKER_PADDING_X 10
+#define PICKER_PADDING_Y 10
+#define PICKER_SHUTTER_BUTTON_WIDTH 60
+#define PICKER_SHUTTER_BUTTON_HEIGHT 30
+#define PICKER_FLASHMODE_BUTTON_WIDTH 60
+#define PICKER_FLASHMODE_BUTTON_HEIGHT 30
+#define PICKER_CAMERADEVICE_BUTTON_WIDTH 60
+#define PICKER_CAMERADEVICE_BUTTON_HEIGHT 30
 static void * CapturingStillImageContext = &CapturingStillImageContext;
 static void * RecordingContext = &RecordingContext;
 static void * SessionRunningAndDeviceAuthorizedContext = &SessionRunningAndDeviceAuthorizedContext;
 
-@interface AVCamViewController () <AVCaptureFileOutputRecordingDelegate>
+@interface AVCamViewController () <AVCaptureFileOutputRecordingDelegate>{
+    __strong AVCaptureDevice *device_;
+    __strong AVCaptureSession *session_;
+    __strong AVCaptureStillImageOutput *imageOutput_;
+    __strong AVCaptureDeviceInput *input_;
+    __strong AVCaptureVideoPreviewLayer *previewLayer_;
+    __strong CALayer *indicatorLayer_;
+    __strong UIButton *shutterButton_;
+    __strong UIButton *flashModeButton_;
+    __strong UIButton *cameraDeviceButton_;
+    CGPoint pointOfInterest_;
+    CGRect defaultBounds_;
+    CGFloat lastPinchScale_;
+    CGFloat scale_;
+}
 
 // For use in the storyboards.
 @property (nonatomic, weak) IBOutlet AVCamPreviewView *previewView;
@@ -100,7 +123,7 @@ static void * SessionRunningAndDeviceAuthorizedContext = &SessionRunningAndDevic
 - (void)viewDidLoad
 {
 	[super viewDidLoad];
-	
+	 NSLog(@"Hello World from camera");
 	// Create the AVCaptureSession
 	AVCaptureSession *session = [[AVCaptureSession alloc] init];
 	[self setSession:session];
@@ -164,7 +187,8 @@ static void * SessionRunningAndDeviceAuthorizedContext = &SessionRunningAndDevic
 			[session addOutput:movieFileOutput];
 			AVCaptureConnection *connection = [movieFileOutput connectionWithMediaType:AVMediaTypeVideo];
 			if ([connection isVideoStabilizationSupported])
-				[connection setEnablesVideoStabilizationWhenAvailable:YES];
+			//	[connection setEnablesVideoStabilizationWhenAvailable:YES];
+                [connection setPreferredVideoStabilizationMode:AVCaptureVideoStabilizationModeAuto];
 			[self setMovieFileOutput:movieFileOutput];
 		}
 		
@@ -402,7 +426,8 @@ static void * SessionRunningAndDeviceAuthorizedContext = &SessionRunningAndDevic
 
 - (IBAction)focusAndExposeTap:(UIGestureRecognizer *)gestureRecognizer
 {
-	CGPoint devicePoint = [(AVCaptureVideoPreviewLayer *)[[self previewView] layer] captureDevicePointOfInterestForPoint:[gestureRecognizer locationInView:[gestureRecognizer view]]];
+    NSLog(@"TAP been detected");
+    CGPoint devicePoint = [(AVCaptureVideoPreviewLayer *)[[self previewView] layer] captureDevicePointOfInterestForPoint:[gestureRecognizer locationInView:[gestureRecognizer view]]];
 	[self focusWithMode:AVCaptureFocusModeAutoFocus exposeWithMode:AVCaptureExposureModeAutoExpose atDevicePoint:devicePoint monitorSubjectAreaChange:YES];
 }
 
@@ -498,6 +523,74 @@ static void * SessionRunningAndDeviceAuthorizedContext = &SessionRunningAndDevic
 	
 	return captureDevice;
 }
+- (IBAction)pinchGesture:(UIPinchGestureRecognizer *)sender {
+  
+    NSLog(@"Pinch detected");
+    CGFloat pinchScale = sender.scale;
+    if(sender.state == UIGestureRecognizerStateBegan){
+        lastPinchScale_ = pinchScale;
+        return;
+    }
+    if(lastPinchScale_ == 0){
+        lastPinchScale_ = pinchScale;
+        return;
+    }
+    
+    //calculate zoom scale
+    CGFloat diff = (pinchScale - lastPinchScale_) * 2;
+    CGFloat scale = scale_;
+    if(diff > 0){
+        scale += 0.05;
+    }else{
+        scale -= 0.05;
+    }
+    if(scale > PICKER_MAXIMUM_ZOOM_SCALE){
+        scale = PICKER_MAXIMUM_ZOOM_SCALE;
+    }else if(scale < 1.0){
+        scale = 1.0;
+    }
+    if(scale_ == scale){
+        return;
+    }
+    scale_ = scale;
+    
+    //calcurate zoom rect
+    CGAffineTransform zt = CGAffineTransformScale(CGAffineTransformIdentity, scale_, scale_);
+    CGRect rect = CGRectApplyAffineTransform(defaultBounds_, zt);
+    
+    if(CGPointEqualToPoint(pointOfInterest_, CGPointZero) || scale == 1.0){
+        rect.origin.x = 0;
+        rect.origin.y = 0;
+    }else{
+        rect.origin.x = -((pointOfInterest_.x * scale_) - defaultBounds_.size.width / 2);
+        rect.origin.y = -((pointOfInterest_.y * scale_) - defaultBounds_.size.height / 2);
+    }
+    if(rect.origin.x > 0){
+        rect.origin.x = 0;
+    }
+    if(rect.origin.y > 0){
+        rect.origin.y = 0;
+    }
+    if(rect.origin.x + rect.size.width < defaultBounds_.size.width){
+        rect.origin.x = defaultBounds_.size.width - rect.size.width;
+    }
+    if(rect.origin.y + rect.size.height < defaultBounds_.size.height){
+        rect.origin.y = defaultBounds_.size.height - rect.size.height;
+    }
+    
+    //calcurate indicator rect
+    CGRect iframe = indicatorLayer_.frame;
+    iframe.origin.x = (pointOfInterest_.x * scale_) - fabs(rect.origin.x) - INDICATOR_RECT_SIZE / 2.0;
+    iframe.origin.y = (pointOfInterest_.y * scale_) - fabs(rect.origin.y) - INDICATOR_RECT_SIZE / 2.0;
+    
+    //set frame without animation
+    [CATransaction begin];
+    [CATransaction setValue:(id)kCFBooleanTrue forKey:kCATransactionDisableActions];
+    previewLayer_.frame = rect;
+    indicatorLayer_.frame = iframe;
+    [CATransaction commit];
+    lastPinchScale_ = pinchScale;
+}
 
 #pragma mark UI
 
@@ -509,6 +602,76 @@ static void * SessionRunningAndDeviceAuthorizedContext = &SessionRunningAndDevic
 			[[[self previewView] layer] setOpacity:1.0];
 		}];
 	});
+}
+- (void)handlePinchGesture:(UIPinchGestureRecognizer *)recognizer {
+    CGFloat pinchScale = recognizer.scale;
+    if(recognizer.state == UIGestureRecognizerStateBegan){
+        lastPinchScale_ = pinchScale;
+        return;
+    }
+    if(lastPinchScale_ == 0){
+        lastPinchScale_ = pinchScale;
+        return;
+    }
+    
+    //calculate zoom scale
+    CGFloat diff = (pinchScale - lastPinchScale_) * 2;
+    CGFloat scale = scale_;
+    if(diff > 0){
+        scale += 0.05;
+    }else{
+        scale -= 0.05;
+    }
+    if(scale > PICKER_MAXIMUM_ZOOM_SCALE){
+        scale = PICKER_MAXIMUM_ZOOM_SCALE;
+    }else if(scale < 1.0){
+        scale = 1.0;
+    }
+    if(scale_ == scale){
+        return;
+    }
+    scale_ = scale;
+    
+    //calcurate zoom rect
+    CGAffineTransform zt = CGAffineTransformScale(CGAffineTransformIdentity, scale_, scale_);
+    CGRect rect = CGRectApplyAffineTransform(defaultBounds_, zt);
+    
+    if(CGPointEqualToPoint(pointOfInterest_, CGPointZero) || scale == 1.0){
+        rect.origin.x = 0;
+        rect.origin.y = 0;
+    }else{
+        rect.origin.x = -((pointOfInterest_.x * scale_) - defaultBounds_.size.width / 2);
+        rect.origin.y = -((pointOfInterest_.y * scale_) - defaultBounds_.size.height / 2);
+    }
+    if(rect.origin.x > 0){
+        rect.origin.x = 0;
+    }
+    if(rect.origin.y > 0){
+        rect.origin.y = 0;
+    }
+    if(rect.origin.x + rect.size.width < defaultBounds_.size.width){
+        rect.origin.x = defaultBounds_.size.width - rect.size.width;
+    }
+    if(rect.origin.y + rect.size.height < defaultBounds_.size.height){
+        rect.origin.y = defaultBounds_.size.height - rect.size.height;
+    }
+    
+    //calcurate indicator rect
+    CGRect iframe = indicatorLayer_.frame;
+    iframe.origin.x = (pointOfInterest_.x * scale_) - fabs(rect.origin.x) - INDICATOR_RECT_SIZE / 2.0;
+    iframe.origin.y = (pointOfInterest_.y * scale_) - fabs(rect.origin.y) - INDICATOR_RECT_SIZE / 2.0;
+    
+    //set frame without animation
+    [CATransaction begin];
+    [CATransaction setValue:(id)kCFBooleanTrue forKey:kCATransactionDisableActions];
+    previewLayer_.frame = rect;
+    indicatorLayer_.frame = iframe;
+    [CATransaction commit];
+    lastPinchScale_ = pinchScale;
+    
+//    if([self.delegate respondsToSelector:@selector(emulatedImagePickerController:didScaledTo:viewRect:)]){
+//        [self.delegate cameraController:self didScaledTo:scale_ viewRect:CGRectMake(fabsf(rect.origin.x / scale_), fabsf(rect.origin.y / scale_), defaultBounds_.size.width, defaultBounds_.size.height)];
+    //}
 }
 
 - (void)checkDeviceAuthorizationStatus
